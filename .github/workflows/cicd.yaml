@@ -3,6 +3,82 @@ on:
   push:
     branches:
       - main
-    
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  EKS_CLUSTER: ${{ vars.EKS_CLUSTER }}
+
 jobs:
-    
+  BuildandPush:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code checkout
+        uses: actions/checkout@v6
+
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+            aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+            aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            aws-region: ${{ env.AWS_REGION }}
+
+      - name: upload image to ECR
+        uses: appleboy/docker-ecr-action@master
+        with:
+          access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          repo: ${{ env.ECR_REPOSITORY }}
+          registry: ${{ secrets.ECR_REGISTRY }}
+          region: ${{ env.AWS_REGION }}
+          tags: latest, ${{ github.run_number}}
+          daemon_off: false
+
+  DeploytoEKS:
+    needs: BuildandPush
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Code checkout
+        uses: actions/checkout@v6
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+            aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+            aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+
+      - name: login to ECR
+        run: |
+          kubectl get secret regcred ||\
+          kubectl create secret docker-registry regcred \
+            --docker-server=${{ secrets.ECR_REGISTRY }} \
+            --docker-username=AWS \
+            --docker-password=$(aws ecr get-login-password) 
+
+      - name: Deploy Helm
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.12
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          cluster-name: ${{ env.EKS_CLUSTER }}
+          config-files: .github/values/dev.yaml
+          chart-path: helm/appcharts
+          namespace: default
+          values: ${{ secrets.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }},apptag=${{ github.run_number }}
+          name: webapp-stack
+
+      - name: Show Pods
+        run: kubectl get pods -A
+          
+      - name: Show Services
+        run: kubectl get svc
+        
+
+      
